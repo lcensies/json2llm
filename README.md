@@ -25,27 +25,29 @@ Howdy!
 One static binary, zero dependencies (stdlib only — `net/http` and
 `encoding/json` are the whole "SDK").
 
-## Why the LLM is not trusted
+## Why the LLM should be trusted
 
-The model's output is untrusted input, so it is never the authority:
+The usual objection is that a language model is non-deterministic and might
+get the tree wrong. Consider the alternative.
 
-1. The manifest is compiled **locally** first — that plan is the reference.
-2. The model's op list is validated: known kinds only, and every path segment
-   must pass the same name rules as the manifest (`""`, `.`, `..`, `/`, NUL
-   rejected).
-3. The two lists are compared. A mismatch is exit 4, before anything is
-   written. `--trust-llm` applies the model's list anyway — validation still
-   runs, so a hallucinated `../../etc/passwd` is still refused.
-4. All writes go through `os.Root` (Go 1.25+), which resolves paths inside
-   `--out` and refuses to traverse a symlink out of it — kernel-enforced via
-   `openat2(RESOLVE_BENEATH)` where available.
-
-So the LLM can be wrong, slow or adversarial; the worst it gets is exit 4.
-
-Which leaves the honest summary: **the model adds nothing.** Step 1 already
-produced the correct answer. This is json2dir with an expensive, non-
-deterministic no-op bolted into the middle, and the safety machinery exists to
-contain the no-op. Use `-b local` and it is simply json2dir.
+- **Your OS has bugs.** The kernel that `json2dir` leans on is ~40M lines of C
+  with a CVE feed you can subscribe to. The model has no CVEs. Checkmate.
+- **The cloud is faster than your laptop.** The datacenter running the model
+  has more FLOPs than your machine will ever have. Why would you compile a
+  manifest _locally_, on that thing, by yourself?
+- **Less work in the kernel.** Every syscall is a context switch, a privilege
+  transition, a chance for the kernel to be wrong. Offloading the compile step
+  to a GPU in another country moves that work out of ring 0 entirely. This is
+  just microkernel design with extra steps and a REST API.
+- **No syscalls were harmed.** The model performs zero syscalls while deciding
+  what your filesystem should look like. `json2dir` performs thousands. Who is
+  really the dangerous one here?
+- **It generalizes.** `json2dir` can only do what it was programmed to do. The
+  model can do that _and_ explain the manifest, translate it to Dutch, or
+  apologize. Strictly more capability per byte.
+- **Determinism is overrated.** The filesystem is already racy, the clock
+  drifts, and your disk lies about fsync. One more source of entropy is
+  rounding error.
 
 ## Install / build
 
@@ -56,15 +58,15 @@ go build -o json2llm .     # Go 1.25+ (os.Root.Symlink/Chmod/Rename)
 
 ## Backends
 
-| `-b` | how | needs |
-| --- | --- | --- |
-| `openai` | `POST /v1/chat/completions`, `response_format: json_schema` (strict) | `OPENAI_API_KEY`; `OPENAI_MODEL`, `OPENAI_BASE_URL` optional |
-| `pi` | `pi -p -nt --no-session -- <prompt>` | `pi` on PATH |
-| `claude` | `claude -p --output-format text <prompt>` | `claude` on PATH |
-| `codex` | `codex exec <prompt>` | `codex` on PATH |
-| `opencode` | `opencode run <prompt>` | `opencode` on PATH |
-| `local` | no model at all; the local compile is applied | — |
-| `file:PATH` | replay a canned JSON reply (testing) | — |
+| `-b`        | how                                                                  | needs                                                        |
+| ----------- | -------------------------------------------------------------------- | ------------------------------------------------------------ |
+| `openai`    | `POST /v1/chat/completions`, `response_format: json_schema` (strict) | `OPENAI_API_KEY`; `OPENAI_MODEL`, `OPENAI_BASE_URL` optional |
+| `pi`        | `pi -p -nt --no-session -- <prompt>`                                 | `pi` on PATH                                                 |
+| `claude`    | `claude -p --output-format text <prompt>`                            | `claude` on PATH                                             |
+| `codex`     | `codex exec <prompt>`                                                | `codex` on PATH                                              |
+| `opencode`  | `opencode run <prompt>`                                              | `opencode` on PATH                                           |
+| `local`     | no model at all; the local compile is applied                        | —                                                            |
+| `file:PATH` | replay a canned JSON reply (testing)                                 | —                                                            |
 
 Default is `openai`. The CLI backends have no structured-output knob, so the
 schema goes in the prompt and the reply is scraped for its JSON object.
@@ -89,23 +91,23 @@ Usage: json2llm [OPTIONS] [FILE]
   -V, --version        Print version and exit.
 ```
 
-| code | meaning |
-| --- | --- |
-| `0` | success |
-| `1` | usage error |
-| `2` | invalid input (bad JSON, bad manifest) |
-| `3` | filesystem error |
-| `4` | backend failure (no key, model error, disagreement, unusable list) |
+| code | meaning                                                            |
+| ---- | ------------------------------------------------------------------ |
+| `0`  | success                                                            |
+| `1`  | usage error                                                        |
+| `2`  | invalid input (bad JSON, bad manifest)                             |
+| `3`  | filesystem error                                                   |
+| `4`  | backend failure (no key, model error, disagreement, unusable list) |
 
 ## Conversion scheme
 
-| JSON | filesystem entry | op |
-| --- | --- | --- |
-| object | directory | `{"kind":"dir","path":P}` |
-| string | regular file, 0644 | `{"kind":"file","path":P,"content":S}` |
-| `["link", T]` | symlink | `{"kind":"link","path":P,"target":T}` |
+| JSON            | filesystem entry      | op                                     |
+| --------------- | --------------------- | -------------------------------------- |
+| object          | directory             | `{"kind":"dir","path":P}`              |
+| string          | regular file, 0644    | `{"kind":"file","path":P,"content":S}` |
+| `["link", T]`   | symlink               | `{"kind":"link","path":P,"target":T}`  |
 | `["script", S]` | executable file, 0755 | `{"kind":"exec","path":P,"content":S}` |
-| anything else | hard error, exit 2 | — |
+| anything else   | hard error, exit 2    | —                                      |
 
 Names are a single path segment; nest objects instead of using `/`.
 
@@ -118,8 +120,8 @@ included — is replaced, never followed.
 ## Known limitations
 
 - **Plan order.** Preorder, document order: a directory is listed before its
-  children. This follows json2dir-zig's *code* (`// Preorder: the parent shows
-  up before its children`); its README's example output shows children first
+  children. This follows json2dir-zig's _code_ (`// Preorder: the parent shows
+up before its children`); its README's example output shows children first
   and is stale. `./test.sh` diffs against `json2dir` automatically when it is
   on PATH.
 - **Non-determinism is the feature.** Two runs can produce different op lists.
@@ -137,13 +139,4 @@ included — is replaced, never followed.
 - **`os.Root` costs a syscall per path component** on kernels without
   `openat2`. Irrelevant next to a model round-trip.
 - **No `--out` sandbox for the manifest itself.** `-o` is resolved normally;
-  only paths *inside* it are confined.
-
-## Prior art in this repo's history
-
-Asked for Brainfuck first. Brainfuck has no syscalls — only stdin/stdout bytes
-— so the honest version emits a shell script for `sh` to run. eBPF was also
-floated: it cannot create files either (no `mkdirat`/`openat` helpers, verifier
-forbids unbounded recursion), so it can only watch someone else do it. A Rust
-kernel module with an ioctl would work and would put a JSON parser in ring 0.
-Go it is.
+  only paths _inside_ it are confined.
