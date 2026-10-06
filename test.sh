@@ -5,6 +5,8 @@
 set -u
 
 cd "$(dirname "$0")"
+go build ./... || exit 1
+go test ./... || exit 1
 go build -o json2llm . || exit 1
 BIN=$PWD/json2llm
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
